@@ -33,6 +33,7 @@ from k20_driver import (
     CMD_SET_KEYMATRIX_SIMPLE,
     CMD_SET_FN_SIMPLE,
     CMD_GET_BATTERY,
+    CMD_SET_SLEEPTIME,
 )
 from profile_manager import ProfileManager, DEFAULT_PROFILES
 
@@ -181,6 +182,7 @@ class TestDriverMethods(unittest.TestCase):
     @patch("os.close")
     @patch("fcntl.ioctl", return_value=65)
     def test_remap_key(self, mock_ioctl, mock_close, mock_open_fd, mock_exists, mock_find):
+        # Spec: FEA_CMD_SET_KEYMATRIX_SIMPLE places the 4-byte action frame at buf[8..11].
         driver = SkillkorpK20Driver()
         success = driver.remap_key("F1", "media_vol_up")
         self.assertTrue(success)
@@ -188,8 +190,53 @@ class TestDriverMethods(unittest.TestCase):
         buf = args[2]
         self.assertEqual(buf[1], CMD_SET_KEYMATRIX_SIMPLE)
         self.assertEqual(buf[3], 1)  # F1 index is 1
-        self.assertEqual(buf[9], 3)  # media_vol_up byte 0
-        self.assertEqual(buf[11], 233) # 0xE9 volume up
+        # media_vol_up action bytes = [3, 0, 233, 0]
+        self.assertEqual(buf[8], 3)    # action byte 0
+        self.assertEqual(buf[9], 0)    # action byte 1
+        self.assertEqual(buf[10], 233) # action byte 2 (0xE9 volume up)
+        self.assertEqual(buf[11], 0)   # action byte 3
+
+    @patch.object(SkillkorpK20Driver, "find_device", return_value="/dev/hidraw_test")
+    @patch("os.path.exists", return_value=True)
+    @patch("os.open", return_value=10)
+    @patch("os.close")
+    @patch("fcntl.ioctl", return_value=65)
+    def test_remap_fn_key(self, mock_ioctl, mock_close, mock_open_fd, mock_exists, mock_find):
+        # Spec: FEA_CMD_SET_FN_SIMPLE uses the same buf[8..11] action frame layout as CMD_SET_KEYMATRIX_SIMPLE.
+        driver = SkillkorpK20Driver()
+        success = driver.remap_fn_key("Q", "mouse_left")
+        self.assertTrue(success)
+        args, _ = mock_ioctl.call_args
+        buf = args[2]
+        self.assertEqual(buf[1], CMD_SET_FN_SIMPLE)
+        # mouse_left action bytes = [1, 0, 240, 0]
+        self.assertEqual(buf[8], 1)
+        self.assertEqual(buf[9], 0)
+        self.assertEqual(buf[10], 240)
+        self.assertEqual(buf[11], 0)
+
+    @patch.object(SkillkorpK20Driver, "find_device", return_value="/dev/hidraw_test")
+    @patch("os.path.exists", return_value=True)
+    @patch("os.open", return_value=10)
+    @patch("os.close")
+    @patch("fcntl.ioctl", return_value=65)
+    def test_set_sleep_time(self, mock_ioctl, mock_close, mock_open_fd, mock_exists, mock_find):
+        # Spec: buf[8..9]=BT light sleep, buf[10..11]=2.4G light sleep,
+        # buf[12..13]=BT deep sleep, buf[14..15]=2.4G deep sleep (all uint16 LE).
+        driver = SkillkorpK20Driver()
+        success = driver.set_sleep_time(light_sleep_sec=300, deep_sleep_sec=1680)
+        self.assertTrue(success)
+        args, _ = mock_ioctl.call_args
+        buf = args[2]
+        self.assertEqual(buf[1], CMD_SET_SLEEPTIME)
+
+        light_lo, light_hi = 300 & 0xFF, (300 >> 8) & 0xFF
+        deep_lo, deep_hi = 1680 & 0xFF, (1680 >> 8) & 0xFF
+
+        self.assertEqual((buf[8], buf[9]), (light_lo, light_hi))     # BT light sleep
+        self.assertEqual((buf[10], buf[11]), (light_lo, light_hi))   # 2.4G light sleep
+        self.assertEqual((buf[12], buf[13]), (deep_lo, deep_hi))     # BT deep sleep
+        self.assertEqual((buf[14], buf[15]), (deep_lo, deep_hi))     # 2.4G deep sleep
 
     @patch.object(SkillkorpK20Driver, "find_device", return_value="/dev/hidraw_test")
     @patch("os.path.exists", return_value=True)

@@ -90,6 +90,15 @@ class SkillkorpK20Window(Adw.ApplicationWindow):
             padding: 16px;
             border: 1px solid rgba(255, 255, 255, 0.08);
         }
+        .color-swatch-red { background-color: #FF0000; }
+        .color-swatch-orange { background-color: #FF7700; }
+        .color-swatch-yellow { background-color: #FFFF00; }
+        .color-swatch-green { background-color: #00FF00; }
+        .color-swatch-cyan { background-color: #00FFFF; }
+        .color-swatch-blue { background-color: #0066FF; }
+        .color-swatch-purple { background-color: #9900FF; }
+        .color-swatch-pink { background-color: #FF00AA; }
+        .color-swatch-white { background-color: #FFFFFF; }
         """)
         display = Gdk.Display.get_default()
         if display:
@@ -163,7 +172,9 @@ class SkillkorpK20Window(Adw.ApplicationWindow):
         main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         main_box.append(self.banner)
         main_box.append(self.view_stack)
-        self.toolbar_view.set_content(main_box)
+
+        self.toast_overlay = Adw.ToastOverlay(child=main_box)
+        self.toolbar_view.set_content(self.toast_overlay)
         self.set_content(self.toolbar_view)
 
         # Build UI Tabs
@@ -233,24 +244,21 @@ class SkillkorpK20Window(Adw.ApplicationWindow):
         palette_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
 
         colors = [
-            ("#FF0000", "Rouge"),
-            ("#FF7700", "Orange"),
-            ("#FFFF00", "Jaune"),
-            ("#00FF00", "Vert"),
-            ("#00FFFF", "Cyan"),
-            ("#0066FF", "Bleu"),
-            ("#9900FF", "Violet"),
-            ("#FF00AA", "Rose"),
-            ("#FFFFFF", "Blanc"),
+            ("#FF0000", "Rouge", "color-swatch-red"),
+            ("#FF7700", "Orange", "color-swatch-orange"),
+            ("#FFFF00", "Jaune", "color-swatch-yellow"),
+            ("#00FF00", "Vert", "color-swatch-green"),
+            ("#00FFFF", "Cyan", "color-swatch-cyan"),
+            ("#0066FF", "Bleu", "color-swatch-blue"),
+            ("#9900FF", "Violet", "color-swatch-purple"),
+            ("#FF00AA", "Rose", "color-swatch-pink"),
+            ("#FFFFFF", "Blanc", "color-swatch-white"),
         ]
-        for hex_col, name in colors:
+        for hex_col, name, css_cls in colors:
             btn = Gtk.Button()
             btn.add_css_class("color-palette-btn")
+            btn.add_css_class(css_cls)
             btn.set_tooltip_text(name)
-            # Colored background styling
-            btn_css = Gtk.CssProvider()
-            btn_css.load_from_string(f"button {{ background-color: {hex_col}; }}")
-            btn.get_style_context().add_provider(btn_css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
             btn.connect("clicked", lambda b, c=hex_col: self._on_palette_color_clicked(c))
             palette_box.append(btn)
 
@@ -298,7 +306,7 @@ class SkillkorpK20Window(Adw.ApplicationWindow):
 
         # Polling rate and debounce
         perf_group = Adw.PreferencesGroup(
-            title="Fréquence & Réactivité",
+            title="Fréquence et Réactivité",
             description="Ajustez la cadence de communication USB et le filtrage mécanique des commutateurs.",
         )
 
@@ -325,7 +333,7 @@ class SkillkorpK20Window(Adw.ApplicationWindow):
 
         # Power & Sleep
         sleep_group = Adw.PreferencesGroup(
-            title="Gestion de l'Alimentation & Veille",
+            title="Gestion de l'Alimentation et Veille",
             description="Économise la batterie en mode sans-fil 2.4GHz lors des périodes d'inactivité.",
         )
 
@@ -404,7 +412,7 @@ class SkillkorpK20Window(Adw.ApplicationWindow):
 
         # Interactive Key Remapping Group
         remap_group = Adw.PreferencesGroup(
-            title="Disposition & Remappage des Touches",
+            title="Disposition et Remappage des Touches",
             description="Format compact 75% (84 touches, disposition AZERTY France).",
         )
 
@@ -493,7 +501,7 @@ class SkillkorpK20Window(Adw.ApplicationWindow):
 
         # Auto-switch & Autostart options
         auto_group = Adw.PreferencesGroup(
-            title="Automatisation & Intégration",
+            title="Automatisation et Intégration",
             description="Basculez de profil selon l'application ouverte et lancez l'application en arrière-plan.",
         )
 
@@ -734,15 +742,20 @@ class SkillkorpK20Window(Adw.ApplicationWindow):
         self._show_toast(msg)
 
     def _refresh_profiles_list(self):
-        profiles = self.pm.list_profiles()
-        self.profile_ids = [p["id"] for p in profiles]
-        labels = [f"{p.get('name', p['id'])} ({p.get('description', '')})" for p in profiles]
-        string_list = Gtk.StringList.new(labels)
-        self.profile_combo.set_model(string_list)
+        old_updating = self._updating_ui
+        self._updating_ui = True
+        try:
+            profiles = self.pm.list_profiles()
+            self.profile_ids = [p["id"] for p in profiles]
+            labels = [f"{p.get('name', p['id'])} ({p.get('description', '')})" for p in profiles]
+            string_list = Gtk.StringList.new(labels)
+            self.profile_combo.set_model(string_list)
 
-        cur_id = self.pm.get_active_profile_id()
-        if cur_id in self.profile_ids:
-            self.profile_combo.set_selected(self.profile_ids.index(cur_id))
+            cur_id = self.pm.get_active_profile_id()
+            if cur_id in self.profile_ids:
+                self.profile_combo.set_selected(self.profile_ids.index(cur_id))
+        finally:
+            self._updating_ui = old_updating
 
     def _on_profile_combo_changed(self, row, param):
         if self._updating_ui: return
@@ -817,7 +830,7 @@ class SkillkorpK20Window(Adw.ApplicationWindow):
     def _show_toast(self, message: str):
         toast = Adw.Toast.new(message)
         toast.set_timeout(3)
-        self.toolbar_view.add_toast(toast)
+        self.toast_overlay.add_toast(toast)
 
 
 class SkillkorpK20App(Adw.Application):
@@ -826,6 +839,7 @@ class SkillkorpK20App(Adw.Application):
             application_id="io.github.skillkorp.k20",
             flags=Gio.ApplicationFlags.DEFAULT_FLAGS,
         )
+        self.connect("startup", self._on_startup)
 
     def do_activate(self):
         win = self.props.active_window
@@ -833,8 +847,7 @@ class SkillkorpK20App(Adw.Application):
             win = SkillkorpK20Window(self)
         win.present()
 
-    def do_startup(self):
-        super().do_startup()
+    def _on_startup(self, app):
         # Actions
         about_act = Gio.SimpleAction.new("about", None)
         about_act.connect("activate", self._on_about)
@@ -855,7 +868,7 @@ class SkillkorpK20App(Adw.Application):
             website="https://github.com/ElMajor76/skillkorp-k20",
             issue_url="https://github.com/ElMajor76/skillkorp-k20/issues",
         )
-        dialog.add_legal_section("Garantie & Compatibilité", None, Gtk.License.CUSTOM, "Pilote non officiel pour clavier de jeu SkillKorp K20 Ultimate.")
+        dialog.add_legal_section("Garantie et Compatibilité", None, Gtk.License.CUSTOM, "Pilote non officiel pour clavier de jeu SkillKorp K20 Ultimate.")
         dialog.present(self.props.active_window)
 
     def _on_factory_reset(self, action, param):

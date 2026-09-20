@@ -573,18 +573,18 @@ class SkillkorpK20Driver:
 
         payload = bytearray(64)
         payload[0] = CMD_SET_SLEEPTIME
-        # BT light sleep
-        payload[8] = light_sleep_sec & 0xFF
-        payload[9] = (light_sleep_sec >> 8) & 0xFF
-        # 2.4G light sleep
-        payload[10] = light_sleep_sec & 0xFF
-        payload[11] = (light_sleep_sec >> 8) & 0xFF
-        # BT deep sleep
-        payload[12] = deep_sleep_sec & 0xFF
-        payload[13] = (deep_sleep_sec >> 8) & 0xFF
-        # 2.4G deep sleep
-        payload[14] = deep_sleep_sec & 0xFF
-        payload[15] = (deep_sleep_sec >> 8) & 0xFF
+        # BT light sleep (buf[8..9])
+        payload[7] = light_sleep_sec & 0xFF
+        payload[8] = (light_sleep_sec >> 8) & 0xFF
+        # 2.4G light sleep (buf[10..11])
+        payload[9] = light_sleep_sec & 0xFF
+        payload[10] = (light_sleep_sec >> 8) & 0xFF
+        # BT deep sleep (buf[12..13])
+        payload[11] = deep_sleep_sec & 0xFF
+        payload[12] = (deep_sleep_sec >> 8) & 0xFF
+        # 2.4G deep sleep (buf[14..15])
+        payload[13] = deep_sleep_sec & 0xFF
+        payload[14] = (deep_sleep_sec >> 8) & 0xFF
 
         success = self._send_feature_report(payload)
         if success:
@@ -696,10 +696,11 @@ class SkillkorpK20Driver:
         payload[0] = CMD_SET_KEYMATRIX_SIMPLE
         payload[1] = profile_idx
         payload[2] = key_idx
-        payload[8] = action_bytes[0]
-        payload[9] = action_bytes[1]
-        payload[10] = action_bytes[2]
-        payload[11] = action_bytes[3]
+        # Action frame at buf[8..11]
+        payload[7] = action_bytes[0]
+        payload[8] = action_bytes[1]
+        payload[9] = action_bytes[2]
+        payload[10] = action_bytes[3]
 
         success = self._send_feature_report(payload)
         if success:
@@ -728,10 +729,11 @@ class SkillkorpK20Driver:
         payload[0] = CMD_SET_FN_SIMPLE
         payload[1] = profile_idx
         payload[2] = key_idx
-        payload[8] = action_bytes[0]
-        payload[9] = action_bytes[1]
-        payload[10] = action_bytes[2]
-        payload[11] = action_bytes[3]
+        # Action frame at buf[8..11]
+        payload[7] = action_bytes[0]
+        payload[8] = action_bytes[1]
+        payload[9] = action_bytes[2]
+        payload[10] = action_bytes[3]
 
         success = self._send_feature_report(payload)
         if success:
