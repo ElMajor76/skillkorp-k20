@@ -1,0 +1,84 @@
+name: CI — Lint & Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    name: Lint (flake8) + Tests (pytest)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+
+      - name: Configurer Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Installer les dépendances de test
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest flake8
+
+      - name: Lint — flake8 (erreurs critiques uniquement)
+        run: |
+          # E9xx = erreurs de syntaxe/runtime, F63x/F7xx/F82x = bugs logiques
+          flake8 k20_driver.py profile_manager.py k20_gui.py k20_tray.py k20ctl \
+            --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: Style — flake8 (avertissements, non bloquant)
+        run: |
+          flake8 k20_driver.py profile_manager.py k20_gui.py k20_tray.py k20ctl \
+            --count --exit-zero --max-line-length=120 --statistics
+        continue-on-error: true
+
+      - name: Tests unitaires — pytest
+        run: |
+          python -m pytest tests/ -v --tb=short
+
+  smoke-test:
+    name: Smoke test — import du driver
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+
+      - name: Configurer Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Vérifier que k20_driver s'importe sans erreur
+        run: |
+          python -c "
+          import k20_driver
+          from k20_driver import (
+              POLLING_RATE_MAP, LIGHT_MODES, SIDE_LIGHT_MODES, KEY_LAYOUT,
+              REMAP_ACTIONS, _HIDIOCSFEATURE, _HIDIOCGFEATURE
+          )
+          print(f'✓ k20_driver importé : {len(KEY_LAYOUT)} touches dans la matrice')
+          print(f'✓ {len(LIGHT_MODES)} modes RGB et {len(SIDE_LIGHT_MODES)} modes latéraux')
+          assert len(KEY_LAYOUT) == 85, 'Touches manquantes dans KEY_LAYOUT'
+          print('✓ Toutes les 85 touches sont présentes')
+          "
+
+      - name: Vérifier que profile_manager s'importe sans erreur
+        run: |
+          python -c "
+          from profile_manager import (
+              DEFAULT_PROFILES, is_autostart_enabled, set_autostart,
+              ProfileManager
+          )
+          print(f'✓ profile_manager importé : {len(DEFAULT_PROFILES)} profils')
+          required = {'rgb', 'side_rgb', 'polling_rate', 'debounce_ms', 'sleep', 'options', 'key_remaps'}
+          for pid, p in DEFAULT_PROFILES.items():
+              missing = required - set(p.keys())
+              assert not missing, f'Profil {pid} manque: {missing}'
+          print('✓ Tous les profils ont les champs requis')
+          "
