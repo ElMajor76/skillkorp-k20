@@ -364,6 +364,36 @@ class SkillkorpK20Driver:
             print(f"Erreur d'envoi de rapport HID: {e}", file=sys.stderr)
             return False
 
+    def _read_feature_report(self, cmd: int, length: int = 65) -> Optional[bytearray]:
+        """Send a feature report query and read back the reply via HIDIOCSFEATURE + HIDIOCGFEATURE.
+
+        1. Populates buf[0] = 0x00 (Report ID), buf[1] = cmd, and sends via _HIDIOCSFEATURE(length).
+        2. Reads the response into the same buffer via _HIDIOCGFEATURE(length).
+        """
+        dev = self.dev_path or self.find_device()
+        if not dev or not os.path.exists(dev):
+            return None
+
+        buf = bytearray(length)
+        buf[0] = 0x00
+        buf[1] = cmd
+
+        try:
+            fd = os.open(dev, os.O_RDWR)
+            try:
+                fcntl.ioctl(fd, _HIDIOCSFEATURE(length), buf)
+                time.sleep(0.01)
+                fcntl.ioctl(fd, _HIDIOCGFEATURE(length), buf)
+                return buf
+            finally:
+                os.close(fd)
+        except PermissionError:
+            print(f"Erreur de permission sur {dev}. Assurez-vous que la règle udev est active.", file=sys.stderr)
+            return None
+        except Exception as e:
+            print(f"Erreur de lecture de rapport HID: {e}", file=sys.stderr)
+            return None
+
     # =========================================================================
     # Configuration Persistence
     # =========================================================================
@@ -752,7 +782,7 @@ class SkillkorpK20Driver:
         return success
 
     def get_battery(self) -> Dict[str, Any]:
-        """Query real-time battery status and charging state."""
+        """Query real-time battery status and charging state via hardware feature reports."""
         # Check if connected
         if not self.is_connected():
             return {
@@ -765,12 +795,7 @@ class SkillkorpK20Driver:
 
         is_wl = self.is_wireless()
 
-        # Send battery query
-        payload = bytearray(64)
-        payload[0] = CMD_GET_BATTERY
-        self._send_feature_report(payload)
-
-        # In wired mode, the battery is constantly charging / 100%
+        # In wired mode, the keyboard is powered and charging via USB-C
         if not is_wl:
             return {
                 "percentage": 100,
@@ -780,18 +805,70 @@ class SkillkorpK20Driver:
                 "status_str": "En charge (Câblé USB)",
             }
 
-        # Try to read vendor notification / status report
-        percentage = self.config.get("_cached_battery", 85)
-        charging = False
+        # In wireless mode (2.4GHz dongle / Bluetooth), query device via HIDIOCSFEATURE + HIDIOCGFEATURE
+        buf = self._read_feature_report(CMD_GET_BATTERY)
+        if buf is None:
+            return {
+                "percentage": None,
+                "charging": False,
+                "connected": True,
+                "wireless": True,
+                "status_str": "Erreur de communication (sans-fil)",
+            }
 
-        # Read vendor report if available on hidraw
-        # On wireless dongle, default fallback if battery query isn't answered
+        # Protocol reverse-engineered from iot_driver.exe / Electron client:
+        # Buffer layout returned by firmware:
+        # buf[0]: Report ID (0x00)
+        # buf[1]: Command echo (CMD_GET_BATTERY = 0x83) OR battery percentage
+        # If buf[1] == CMD_GET_BATTERY:
+        #   buf[2] = battery percentage (0-100)
+        #   buf[3] = charging state (1: charging, 2: full, other: discharging)
+        #   buf[4] = low power threshold
+        # If buf[1] != CMD_GET_BATTERY and 1 <= buf[1] <= 100:
+        #   buf[1] = battery percentage
+        #   buf[2] = charging state
+        percentage = None
+        charging = False
+        state_byte = 0
+
+        if buf[1] == CMD_GET_BATTERY:
+            raw_pct = buf[2]
+            state_byte = buf[3]
+            if 0 < raw_pct <= 100:
+                percentage = raw_pct
+        elif 0 < buf[1] <= 100:
+            percentage = buf[1]
+            state_byte = buf[2]
+
+        if percentage is not None:
+            if state_byte == 1:
+                charging = True
+                status_str = f"En charge ({percentage}%)"
+            elif state_byte == 2:
+                charging = False
+                status_str = f"Batterie pleine ({percentage}%)"
+            else:
+                charging = False
+                status_str = f"{percentage}% (Sans-fil 2.4GHz)"
+
+            return {
+                "percentage": percentage,
+                "charging": charging,
+                "connected": True,
+                "wireless": True,
+                "status_str": status_str,
+            }
+
+        # If the response is all zeros or unpopulated (e.g. keyboard asleep / dongle telemetry pending),
+        # return percentage=None with an explicit status message rather than a fabricated fallback.
+        # TODO: The 2.4GHz dongle (PID 4011) may require a specific vendor wake sequence
+        # (e.g. 0xFE length handshake or 0xF7 polling) to populate battery telemetry across the RF link.
         return {
-            "percentage": percentage,
-            "charging": charging,
+            "percentage": None,
+            "charging": False,
             "connected": True,
             "wireless": True,
-            "status_str": f"{percentage}% (Sans-fil 2.4GHz)",
+            "status_str": "Lecture batterie non implémentée (sans-fil)",
         }
 
     def apply_profile(self, profile: Dict[str, Any]) -> bool:

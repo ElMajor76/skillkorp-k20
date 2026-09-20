@@ -251,6 +251,75 @@ class TestDriverMethods(unittest.TestCase):
         buf = args[2]
         self.assertEqual(buf[1], CMD_SET_RESERT)
 
+    @patch.object(SkillkorpK20Driver, "is_wireless", return_value=True)
+    @patch.object(SkillkorpK20Driver, "is_connected", return_value=True)
+    @patch.object(SkillkorpK20Driver, "find_device", return_value="/dev/hidraw_test")
+    @patch("os.path.exists", return_value=True)
+    @patch("os.open", return_value=10)
+    @patch("os.close")
+    @patch("fcntl.ioctl")
+    def test_get_battery_wireless_calls_hidiocgfeature(self, mock_ioctl, mock_close, mock_open_fd, mock_exists, mock_find, mock_conn, mock_wl):
+        driver = SkillkorpK20Driver()
+
+        def fake_ioctl(fd, request, buf):
+            if request == _HIDIOCGFEATURE(65):
+                buf[0] = 0x00
+                buf[1] = CMD_GET_BATTERY
+                buf[2] = 82
+                buf[3] = 1
+                return 65
+            elif request == _HIDIOCSFEATURE(65):
+                return 65
+            return 0
+
+        mock_ioctl.side_effect = fake_ioctl
+
+        bat = driver.get_battery()
+
+        # Check that both HIDIOCSFEATURE and HIDIOCGFEATURE were called
+        reqs = [call[0][1] for call in mock_ioctl.call_args_list]
+        self.assertIn(_HIDIOCSFEATURE(65), reqs)
+        self.assertIn(_HIDIOCGFEATURE(65), reqs)
+
+        # Check parsed battery data
+        self.assertEqual(bat["percentage"], 82)
+        self.assertTrue(bat["charging"])
+        self.assertTrue(bat["wireless"])
+        self.assertIn("82%", bat["status_str"])
+
+    @patch.object(SkillkorpK20Driver, "is_wireless", return_value=True)
+    @patch.object(SkillkorpK20Driver, "is_connected", return_value=True)
+    @patch.object(SkillkorpK20Driver, "find_device", return_value="/dev/hidraw_test")
+    @patch("os.path.exists", return_value=True)
+    @patch("os.open", return_value=10)
+    @patch("os.close")
+    @patch("fcntl.ioctl")
+    def test_get_battery_wireless_unpopulated_returns_none(self, mock_ioctl, mock_close, mock_open_fd, mock_exists, mock_find, mock_conn, mock_wl):
+        driver = SkillkorpK20Driver()
+
+        # When device returns all zeros (telemetry unavailable over RF link)
+        def fake_ioctl(fd, request, buf):
+            return 65
+
+        mock_ioctl.side_effect = fake_ioctl
+
+        bat = driver.get_battery()
+
+        reqs = [call[0][1] for call in mock_ioctl.call_args_list]
+        self.assertIn(_HIDIOCGFEATURE(65), reqs)
+        self.assertIsNone(bat["percentage"])
+        self.assertFalse(bat["charging"])
+        self.assertIn("non implémentée", bat["status_str"])
+
+    @patch.object(SkillkorpK20Driver, "is_wireless", return_value=False)
+    @patch.object(SkillkorpK20Driver, "is_connected", return_value=True)
+    def test_get_battery_wired(self, mock_conn, mock_wl):
+        driver = SkillkorpK20Driver()
+        bat = driver.get_battery()
+        self.assertEqual(bat["percentage"], 100)
+        self.assertTrue(bat["charging"])
+        self.assertFalse(bat["wireless"])
+
 
 class TestProfileManager(unittest.TestCase):
     """Tests du gestionnaire multi-profils."""
