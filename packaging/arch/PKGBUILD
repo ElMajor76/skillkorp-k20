@@ -1,0 +1,43 @@
+# Maintainer: nplacide <nplacide95@gmail.com>
+pkgname=skillkorp-k20
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Linux driver, CLI, and GTK4/Libadwaita GUI for SkillKorp K20 Ultimate gaming keyboard"
+arch=('any')
+url="https://github.com/ElMajor76/skillkorp-k20"
+license=('MIT')
+depends=('python' 'python-gobject' 'libadwaita' 'systemd')
+optdepends=(
+    'libayatana-appindicator: Support for system tray icon'
+    'libappindicator-gtk3: Alternative tray icon support'
+    'xdotool: Auto-switching profiles based on active window under X11'
+)
+source=("$pkgname-$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+    cd "$srcdir/$pkgname-$pkgver"
+
+    install -d "$pkgdir/usr/share/$pkgname"
+    install -d "$pkgdir/usr/bin"
+    install -d "$pkgdir/usr/lib/udev/rules.d"
+    install -d "$pkgdir/usr/share/applications"
+    install -d "$pkgdir/usr/share/icons/hicolor/256x256/apps"
+    install -d "$pkgdir/usr/share/licenses/$pkgname"
+
+    install -m 0755 k20_driver.py "$pkgdir/usr/share/$pkgname/k20_driver.py"
+    install -m 0755 profile_manager.py "$pkgdir/usr/share/$pkgname/profile_manager.py"
+    install -m 0755 k20_gui.py "$pkgdir/usr/share/$pkgname/k20_gui.py"
+    install -m 0755 k20_tray.py "$pkgdir/usr/share/$pkgname/k20_tray.py"
+    install -m 0755 k20ctl "$pkgdir/usr/share/$pkgname/k20ctl"
+    cp -r assets "$pkgdir/usr/share/$pkgname/"
+
+    ln -s "/usr/share/$pkgname/k20ctl" "$pkgdir/usr/bin/k20ctl"
+    ln -s "/usr/share/$pkgname/k20_gui.py" "$pkgdir/usr/bin/k20-gui"
+    ln -s "/usr/share/$pkgname/k20_tray.py" "$pkgdir/usr/bin/k20-tray"
+
+    install -m 0644 udev/99-skillkorp-k20.rules "$pkgdir/usr/lib/udev/rules.d/99-skillkorp-k20.rules"
+    install -m 0644 io.github.skillkorp.k20.desktop "$pkgdir/usr/share/applications/io.github.skillkorp.k20.desktop"
+    install -m 0644 assets/skillkorp-k20.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/skillkorp-k20.png"
+    install -m 0644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

@@ -1,0 +1,521 @@
+#!/usr/bin/env python3
+"""
+k20ctl - SkillKorp K20 Ultimate Command Line Controller
+"""
+
+import sys
+import os
+import time
+import json
+import argparse
+import subprocess
+import signal
+
+# Add project directory to Python module search path
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from k20_driver import (
+    SkillkorpK20Driver,
+    LIGHT_MODES,
+    LIGHT_MODE_BY_CODE,
+    LIGHT_CODE_BY_KEY,
+    SIDE_LIGHT_MODES,
+    SIDE_LIGHT_CODE_BY_KEY,
+    POLLING_RATE_MAP,
+    REMAP_ACTIONS,
+    KEY_LAYOUT,
+)
+from profile_manager import (
+    ProfileManager,
+    detect_active_window_class,
+    is_autostart_enabled,
+    set_autostart,
+)
+
+
+def cmd_status(driver: SkillkorpK20Driver, args):
+    driver.reload_config_if_changed()
+    connected = driver.is_connected()
+    is_wl = driver.is_wireless()
+    bat = driver.get_battery()
+
+    pm = ProfileManager()
+    active_prof_id = pm.get_active_profile_id()
+    active_prof = pm.get_profile(active_prof_id)
+    prof_name = active_prof.get("name", active_prof_id) if active_prof else active_prof_id
+
+    cfg = driver.config
+    rgb = cfg.get("rgb", {})
+    srgb = cfg.get("side_rgb", {})
+    opts = cfg.get("options", {})
+    sleep_cfg = cfg.get("sleep", {})
+
+    if getattr(args, "json", False):
+        out = {
+            "connected": connected,
+            "wireless": is_wl,
+            "device_node": driver.dev_path,
+            "battery": bat,
+            "active_profile": {
+                "id": active_prof_id,
+                "name": prof_name,
+            },
+            "polling_rate_hz": cfg.get("polling_rate", 1000),
+            "debounce_ms": cfg.get("debounce_ms", 8),
+            "sleep": sleep_cfg,
+            "options": opts,
+            "rgb": rgb,
+            "side_rgb": srgb,
+        }
+        print(json.dumps(out, indent=2, ensure_ascii=False))
+        return
+
+    print("========================================")
+    print("       SKILLKORP K20 ULTIMATE           ")
+    print("========================================")
+    if connected:
+        mode_str = "Sans-fil 2.4GHz" if is_wl else "Filaire USB"
+        conn_str = f"\033[92mConnecté\033[0m ({mode_str}, {driver.dev_path})"
+    else:
+        conn_str = "\033[91mDéconnecté\033[0m"
+    print(f"Statut        : {conn_str}")
+
+    if connected:
+        charge_str = " (En charge ⚡)" if bat.get("charging") else ""
+        pct = bat.get("percentage")
+        bat_color = "\033[92m" if (pct or 0) > 20 else "\033[91m"
+        print(f"Batterie      : {bat_color}{pct}%\033[0m{charge_str}")
+
+    print(f"Profil Actif  : \033[95m{prof_name}\033[0m ({active_prof_id})")
+    print(f"Taux de poll  : \033[96m{cfg.get('polling_rate', 1000)} Hz\033[0m")
+    print(f"Anti-rebond   : {cfg.get('debounce_ms', 8)} ms")
+    print(f"Veille légère : {sleep_cfg.get('light_sleep_sec', 120)} s")
+    print(f"Veille prof.  : {sleep_cfg.get('deep_sleep_sec', 1680)} s ({sleep_cfg.get('deep_sleep_sec', 1680)//60} min)")
+
+    # Keyboard Options
+    win_lock = "\033[91mVerrouillée\033[0m" if opts.get("win_lock") else "\033[92mDéverrouillée\033[0m"
+    print(f"Touche Windows: {win_lock}")
+    wasd_swap = "\033[93mInversées avec flèches\033[0m" if opts.get("wasd_swap") else "Normal"
+    print(f"Touches ZQSD  : {wasd_swap}")
+    os_mode = opts.get("os_mode", "win").upper()
+    print(f"Mode Système  : {os_mode}")
+    gaming_mode = "\033[92mActivé\033[0m" if opts.get("gaming_mode") else "Désactivé"
+    print(f"Mode Gaming   : {gaming_mode}")
+
+    # RGB
+    mode_label = dict((k, label) for k, label, _ in LIGHT_MODES).get(rgb.get("mode"), rgb.get("mode"))
+    dir_str = "Droite" if rgb.get("direction") == 0 else "Gauche"
+    print(f"Éclairage RGB : \033[93m{mode_label}\033[0m (Vitesse {rgb.get('speed', 3)}/5, Luminosité {rgb.get('brightness', 4)}/4, {dir_str})")
+    if rgb.get("color"):
+        print(f"Couleur RGB   : {rgb.get('color')}")
+
+    # Side RGB
+    smode_label = dict((k, label) for k, label, _ in SIDE_LIGHT_MODES).get(srgb.get("mode"), srgb.get("mode"))
+    print(f"Bandes LED    : {smode_label} (Luminosité {srgb.get('brightness', 4)}/4)")
+    print("========================================")
+
+
+def cmd_battery(driver: SkillkorpK20Driver, args):
+    bat = driver.get_battery()
+    if getattr(args, "json", False):
+        print(json.dumps(bat, indent=2, ensure_ascii=False))
+        return
+
+    if not bat.get("connected"):
+        print("\033[91mClavier non connecté.\033[0m")
+        sys.exit(1)
+
+    pct = bat.get("percentage")
+    charge = " (En charge ⚡)" if bat.get("charging") else ""
+    color = "\033[92m" if (pct or 0) > 20 else "\033[91m"
+    print(f"Niveau de batterie: {color}{pct}%\033[0m{charge}")
+
+
+def cmd_rgb(driver: SkillkorpK20Driver, args):
+    cfg = driver.config.get("rgb", {})
+    mode = args.mode or cfg.get("mode", "wave")
+    speed = args.speed if args.speed is not None else cfg.get("speed", 3)
+    brightness = args.brightness if args.brightness is not None else cfg.get("brightness", 4)
+    direction = args.direction if args.direction is not None else cfg.get("direction", 0)
+    color = args.color or cfg.get("color", "#FF0000")
+
+    success = driver.set_rgb(mode=mode, speed=speed, brightness=brightness, direction=direction, color=color)
+    if success:
+        print(f"\033[92mÉclairage RGB configuré:\033[0m Mode={mode}, Vitesse={speed}, Luminosité={brightness}, Couleur={color}")
+    else:
+        print("\033[91mÉchec de la configuration RGB.\033[0m", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_side_rgb(driver: SkillkorpK20Driver, args):
+    cfg = driver.config.get("side_rgb", {})
+    mode = args.mode or cfg.get("mode", "rainbow")
+    speed = args.speed if args.speed is not None else cfg.get("speed", 3)
+    brightness = args.brightness if args.brightness is not None else cfg.get("brightness", 4)
+    color = args.color or cfg.get("color", "#00FFCC")
+
+    success = driver.set_side_rgb(mode=mode, speed=speed, brightness=brightness, color=color)
+    if success:
+        print(f"\033[92mÉclairage latéral configuré:\033[0m Mode={mode}, Vitesse={speed}, Luminosité={brightness}, Couleur={color}")
+    else:
+        print("\033[91mÉchec de la configuration latérale.\033[0m", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_polling_rate(driver: SkillkorpK20Driver, args):
+    rate = args.rate
+    success = driver.set_polling_rate(rate)
+    if success:
+        print(f"\033[92mTaux de rafraîchissement configuré à {rate} Hz.\033[0m")
+    else:
+        print(f"\033[91mÉchec du réglage du taux de rafraîchissement.\033[0m", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_debounce(driver: SkillkorpK20Driver, args):
+    ms = args.ms
+    success = driver.set_debounce(ms)
+    if success:
+        print(f"\033[92mTemps d'anti-rebond configuré à {ms} ms.\033[0m")
+    else:
+        print(f"\033[91mÉchec du réglage de l'anti-rebond.\033[0m", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_sleep(driver: SkillkorpK20Driver, args):
+    cfg = driver.config.get("sleep", {})
+    light = args.light if args.light is not None else cfg.get("light_sleep_sec", 120)
+    deep = args.deep if args.deep is not None else cfg.get("deep_sleep_sec", 1680)
+
+    success = driver.set_sleep_time(light, deep)
+    if success:
+        print(f"\033[92mDélais de mise en veille configurés:\033[0m Légère={light}s, Profonde={deep}s ({deep//60} min)")
+    else:
+        print("\033[91mÉchec du réglage des délais de veille.\033[0m", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_win_lock(driver: SkillkorpK20Driver, args):
+    cur = driver.config.get("options", {}).get("win_lock", False)
+    if args.state == "toggle":
+        target = not cur
+    elif args.state == "on":
+        target = True
+    else:
+        target = False
+
+    success = driver.set_keyboard_options(win_lock=target)
+    if success:
+        st_str = "verrouillée" if target else "déverrouillée"
+        print(f"\033[92mTouche Windows {st_str}.\033[0m")
+    else:
+        print("\033[91mÉchec du réglage du verrouillage Windows.\033[0m", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_wasd_swap(driver: SkillkorpK20Driver, args):
+    cur = driver.config.get("options", {}).get("wasd_swap", False)
+    if args.state == "toggle":
+        target = not cur
+    elif args.state == "on":
+        target = True
+    else:
+        target = False
+
+    success = driver.set_keyboard_options(wasd_swap=target)
+    if success:
+        st_str = "inversées avec les flèches" if target else "en mode normal"
+        print(f"\033[92mTouches ZQSD {st_str}.\033[0m")
+    else:
+        print("\033[91mÉchec du réglage de l'inversion ZQSD.\033[0m", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_os_mode(driver: SkillkorpK20Driver, args):
+    mode = args.mode.lower()
+    success = driver.set_keyboard_options(os_mode=mode)
+    if success:
+        print(f"\033[92mMode système configuré: {mode.upper()}.\033[0m")
+    else:
+        print("\033[91mÉchec du réglage du mode système.\033[0m", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_gaming_mode(driver: SkillkorpK20Driver, args):
+    target = (args.state == "on")
+    success = driver.set_keyboard_options(gaming_mode=target)
+    if success:
+        st_str = "activé" if target else "désactivé"
+        print(f"\033[92mMode Gaming {st_str}.\033[0m")
+    else:
+        print("\033[91mÉchec du réglage du mode Gaming.\033[0m", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_remap(driver: SkillkorpK20Driver, args):
+    key = args.key
+    action = args.action
+    fn_mode = getattr(args, "fn", False)
+
+    try:
+        if fn_mode:
+            success = driver.remap_fn_key(key, action)
+            type_str = "Fn + "
+        else:
+            success = driver.remap_key(key, action)
+            type_str = ""
+
+        if success:
+            act_name = REMAP_ACTIONS.get(action, (action, []))[0]
+            print(f"\033[92mTouche {type_str}'{key}' remappée vers '{act_name}'.\033[0m")
+        else:
+            print("\033[91mÉchec du remappage de la touche.\033[0m", file=sys.stderr)
+            sys.exit(1)
+    except ValueError as e:
+        print(f"\033[91mErreur: {e}\033[0m", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_reset(driver: SkillkorpK20Driver, args):
+    if not args.force:
+        confirm = input("Êtes-vous sûr de vouloir réinitialiser le clavier aux réglages d'usine ? (o/N) ")
+        if confirm.lower() not in ("o", "oui", "y", "yes"):
+            print("Opération annulée.")
+            return
+
+    success = driver.factory_reset()
+    if success:
+        print("\033[92mClavier réinitialisé aux réglages d'usine avec succès.\033[0m")
+    else:
+        print("\033[91mÉchec de la réinitialisation d'usine.\033[0m", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_profile(driver: SkillkorpK20Driver, args):
+    pm = ProfileManager()
+    action = args.action
+
+    if action == "list":
+        profiles = pm.list_profiles()
+        if getattr(args, "json", False):
+            print(json.dumps(profiles, indent=2, ensure_ascii=False))
+            return
+
+        print("Profils disponibles :")
+        for p in profiles:
+            star = "\033[92m* \033[0m" if p.get("active") else "  "
+            print(f"{star}\033[1m{p['id']:10s}\033[0m - {p.get('name', p['id'])}")
+            if p.get("description"):
+                print(f"     {p['description']}")
+            apps = p.get("auto_switch_apps", [])
+            if apps:
+                print(f"     Applications: {', '.join(apps)}")
+
+    elif action == "get":
+        prof_id = args.profile_id or pm.get_active_profile_id()
+        p = pm.get_profile(prof_id)
+        if not p:
+            print(f"\033[91mProfil '{prof_id}' introuvable.\033[0m", file=sys.stderr)
+            sys.exit(1)
+        print(json.dumps(p, indent=2, ensure_ascii=False))
+
+    elif action == "set":
+        prof_id = args.profile_id
+        try:
+            p = pm.switch_profile(prof_id, driver=driver)
+            print(f"\033[92mProfil actif : {p.get('name', prof_id)} ({prof_id})\033[0m")
+        except ValueError as e:
+            print(f"\033[91mErreur: {e}\033[0m", file=sys.stderr)
+            sys.exit(1)
+
+    elif action == "new":
+        prof_id = args.profile_id
+        name = args.name or prof_id
+        copy_from = args.copy_from
+        p = pm.create_profile(prof_id, name, copy_from)
+        print(f"\033[92mProfil '{prof_id}' créé avec succès.\033[0m")
+
+    elif action == "delete":
+        prof_id = args.profile_id
+        try:
+            pm.delete_profile(prof_id)
+            print(f"\033[92mProfil '{prof_id}' supprimé avec succès.\033[0m")
+        except ValueError as e:
+            print(f"\033[91mErreur: {e}\033[0m", file=sys.stderr)
+            sys.exit(1)
+
+    elif action == "export":
+        prof_id = args.profile_id
+        target = args.file
+        try:
+            pm.export_profile(prof_id, target)
+            print(f"\033[92mProfil '{prof_id}' exporté vers {target}.\033[0m")
+        except ValueError as e:
+            print(f"\033[91mErreur: {e}\033[0m", file=sys.stderr)
+            sys.exit(1)
+
+    elif action == "import":
+        source = args.file
+        new_id = args.profile_id
+        try:
+            safe_id = pm.import_profile(source, new_id)
+            print(f"\033[92mProfil importé sous l'identifiant '{safe_id}'.\033[0m")
+        except Exception as e:
+            print(f"\033[91mErreur lors de l'import: {e}\033[0m", file=sys.stderr)
+            sys.exit(1)
+
+
+def cmd_daemon(driver: SkillkorpK20Driver, args):
+    """Run the profile auto-switch daemon monitoring active window."""
+    pm = ProfileManager()
+    print("Démarrage du démon de bascule automatique de profils SkillKorp K20...")
+    last_class = None
+    running = True
+
+    def sig_handler(signum, frame):
+        nonlocal running
+        running = False
+        print("\nArrêt du démon.")
+
+    signal.signal(signal.SIGINT, sig_handler)
+    signal.signal(signal.SIGTERM, sig_handler)
+
+    while running:
+        if pm.is_auto_switch_enabled():
+            cls = detect_active_window_class()
+            if cls and cls != last_class:
+                last_class = cls
+                # Check profiles matching this app
+                profiles = pm.list_profiles()
+                matched_prof = None
+                for p in profiles:
+                    for app in p.get("auto_switch_apps", []):
+                        if app.lower() in cls:
+                            matched_prof = p["id"]
+                            break
+                    if matched_prof:
+                        break
+
+                if matched_prof and matched_prof != pm.get_active_profile_id():
+                    print(f"Application active: {cls} -> Bascule vers le profil '{matched_prof}'")
+                    pm.switch_profile(matched_prof, driver=driver)
+
+        time.sleep(1.0)
+
+
+def main():
+    common_parser = argparse.ArgumentParser(add_help=False)
+    common_parser.add_argument("--json", action="store_true", help="Sortie au format JSON pour scripts")
+
+    parser = argparse.ArgumentParser(
+        prog="k20ctl",
+        description="Utilitaire de configuration en ligne de commande pour le clavier gaming SkillKorp K20 Ultimate.",
+        parents=[common_parser],
+    )
+    parser.add_argument("-d", "--device", help="Chemin du nœud de périphérique hidraw spécifique")
+
+    subparsers = parser.add_subparsers(dest="command", help="Commandes disponibles")
+
+    # status
+    p_status = subparsers.add_parser("status", parents=[common_parser], help="Afficher l'état complet du clavier")
+
+    # battery
+    p_battery = subparsers.add_parser("battery", parents=[common_parser], help="Afficher l'état et le pourcentage de batterie")
+
+    # rgb
+    p_rgb = subparsers.add_parser("rgb", parents=[common_parser], help="Configurer l'éclairage RGB des touches")
+    p_rgb.add_argument("--mode", choices=[k for k, _, _ in LIGHT_MODES], help="Effet RGB")
+    p_rgb.add_argument("--speed", type=int, choices=range(1, 6), help="Vitesse (1 à 5)")
+    p_rgb.add_argument("--brightness", type=int, choices=range(0, 5), help="Luminosité (0 à 4)")
+    p_rgb.add_argument("--direction", type=int, choices=[0, 1], help="Direction (0=Droite, 1=Gauche)")
+    p_rgb.add_argument("--color", help="Couleur hexadécimale (ex: '#FF0000')")
+
+    # side-rgb
+    p_srgb = subparsers.add_parser("side-rgb", parents=[common_parser], help="Configurer les bandes LED latérales")
+    p_srgb.add_argument("--mode", choices=[k for k, _, _ in SIDE_LIGHT_MODES], help="Effet latéral")
+    p_srgb.add_argument("--speed", type=int, choices=range(1, 6), help="Vitesse (1 à 5)")
+    p_srgb.add_argument("--brightness", type=int, choices=range(0, 5), help="Luminosité (0 à 4)")
+    p_srgb.add_argument("--color", help="Couleur hexadécimale")
+
+    # polling-rate
+    p_poll = subparsers.add_parser("polling-rate", parents=[common_parser], help="Configurer le taux de rafraîchissement")
+    p_poll.add_argument("rate", type=int, choices=[125, 250, 500, 1000], help="Fréquence en Hz")
+
+    # debounce
+    p_deb = subparsers.add_parser("debounce", parents=[common_parser], help="Configurer le temps d'anti-rebond")
+    p_deb.add_argument("ms", type=int, choices=range(2, 21), help="Temps en ms (2 à 20)")
+
+    # sleep
+    p_sleep = subparsers.add_parser("sleep", parents=[common_parser], help="Configurer les délais de mise en veille")
+    p_sleep.add_argument("--light", type=int, help="Veille légère en secondes")
+    p_sleep.add_argument("--deep", type=int, help="Veille profonde en secondes")
+
+    # win-lock
+    p_win = subparsers.add_parser("win-lock", parents=[common_parser], help="Verrouiller/déverrouiller la touche Windows")
+    p_win.add_argument("state", choices=["on", "off", "toggle"], help="État du verrouillage")
+
+    # wasd-swap
+    p_wasd = subparsers.add_parser("wasd-swap", parents=[common_parser], help="Inverser les touches ZQSD et les flèches")
+    p_wasd.add_argument("state", choices=["on", "off", "toggle"], help="État de l'inversion")
+
+    # os-mode
+    p_os = subparsers.add_parser("os-mode", parents=[common_parser], help="Configurer le mode de compatibilité système")
+    p_os.add_argument("mode", choices=["win", "mac", "ios", "android"], help="Système d'exploitation")
+
+    # gaming-mode
+    p_game = subparsers.add_parser("gaming-mode", parents=[common_parser], help="Activer ou désactiver le mode Gaming")
+    p_game.add_argument("state", choices=["on", "off"], help="État du mode Gaming")
+
+    # remap
+    p_remap = subparsers.add_parser("remap", parents=[common_parser], help="Remapper une touche standard ou Fn")
+    p_remap.add_argument("key", help="Nom de la touche (ex: F1, A, Esc)")
+    p_remap.add_argument("action", choices=list(REMAP_ACTIONS.keys()), help="Action assignée")
+    p_remap.add_argument("--fn", action="store_true", help="Remapper la combinaison Fn + touche")
+
+    # reset
+    p_reset = subparsers.add_parser("reset", parents=[common_parser], help="Réinitialiser le clavier aux réglages d'usine")
+    p_reset.add_argument("-f", "--force", action="store_true", help="Ne pas demander confirmation")
+
+    # profile
+    p_prof = subparsers.add_parser("profile", parents=[common_parser], help="Gestion des profils de configuration")
+    p_prof.add_argument("action", choices=["list", "get", "set", "new", "delete", "export", "import"])
+    p_prof.add_argument("profile_id", nargs="?", help="Identifiant du profil")
+    p_prof.add_argument("--name", help="Nom lisible du profil (pour 'new')")
+    p_prof.add_argument("--copy-from", help="Profil source à copier (pour 'new')")
+    p_prof.add_argument("--file", help="Fichier JSON cible ou source (pour 'export'/'import')")
+
+    # daemon
+    p_daemon = subparsers.add_parser("daemon", parents=[common_parser], help="Lancer le démon de bascule automatique de profils")
+
+    args = parser.parse_args()
+
+    if not args.command:
+        # Default to status if no command given
+        args.command = "status"
+
+    driver = SkillkorpK20Driver(dev_path=args.device)
+
+    dispatch = {
+        "status": cmd_status,
+        "battery": cmd_battery,
+        "rgb": cmd_rgb,
+        "side-rgb": cmd_side_rgb,
+        "polling-rate": cmd_polling_rate,
+        "debounce": cmd_debounce,
+        "sleep": cmd_sleep,
+        "win-lock": cmd_win_lock,
+        "wasd-swap": cmd_wasd_swap,
+        "os-mode": cmd_os_mode,
+        "gaming-mode": cmd_gaming_mode,
+        "remap": cmd_remap,
+        "reset": cmd_reset,
+        "profile": cmd_profile,
+        "daemon": cmd_daemon,
+    }
+
+    fn = dispatch.get(args.command)
+    if fn:
+        fn(driver, args)
+
+
+if __name__ == "__main__":
+    main()

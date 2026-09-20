@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=SkillKorp K20 Ultimate
+GenericName=Gestionnaire de Clavier Gaming
+Comment=Pilote et configuration du clavier SkillKorp K20 Ultimate sous Linux
+Exec=k20-gui
+Icon=skillkorp-k20
+Terminal=false
+Type=Application
+Categories=Settings;HardwareSettings;Utility;
+Keywords=keyboard;clavier;skillkorp;k20;rgb;gaming;
+StartupNotify=true

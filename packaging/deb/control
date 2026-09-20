@@ -1,0 +1,13 @@
+Package: skillkorp-k20
+Version: 1.0.0
+Section: utils
+Priority: optional
+Architecture: all
+Depends: python3, python3-gi, gir1.2-gtk-4.0, gir1.2-adw-1, udev, gir1.2-notify-0.7
+Recommends: gir1.2-ayatanaappindicator3-0.1 | gir1.2-appindicator3-0.1
+Maintainer: nplacide <nplacide95@gmail.com>
+Homepage: https://github.com/ElMajor76/skillkorp-k20
+Description: Linux driver, CLI, and GUI for SkillKorp K20 Ultimate gaming keyboard
+ Native Linux implementation of hardware driver, CLI tool (k20ctl),
+ and modern GTK 4 / Libadwaita GUI for the SkillKorp K20 Ultimate
+ compact 75% mechanical wireless keyboard (Yichip YC3121 SoC / CX71D board).
