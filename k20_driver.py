@@ -305,8 +305,10 @@ class SkillkorpK20Driver:
                 if os.path.exists(desc_path):
                     with open(desc_path, "rb") as df:
                         desc = df.read()
-                    # Interface 2 has 20 bytes descriptor: [6, 255, 255, 9, 2, ...]
-                    if len(desc) == 20 and desc[0] == 0x06 and desc[1] == 0xFF and desc[2] == 0xFF:
+                    # Interface 2 signature: exactly 20 bytes with [0x06, 0xFF, 0xFF, 0x09, 0x02]
+                    # (Usage Page 0xFFFF, Usage 0x0002).
+                    if (len(desc) == 20 and desc[0] == 0x06 and desc[1] == 0xFF
+                            and desc[2] == 0xFF and desc[3] == 0x09 and desc[4] == 0x02):
                         return dev_node
 
                 candidates.append(dev_node)

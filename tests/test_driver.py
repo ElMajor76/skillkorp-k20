@@ -320,6 +320,45 @@ class TestDriverMethods(unittest.TestCase):
         self.assertTrue(bat["charging"])
         self.assertFalse(bat["wireless"])
 
+    @patch("k20_driver.glob.glob")
+    @patch("k20_driver.os.path.exists")
+    @patch("builtins.open")
+    def test_find_device_distinguishes_interface_2_from_interface_1(self, mock_open_file, mock_exists, mock_glob):
+        mock_glob.return_value = [
+            "/sys/class/hidraw/hidraw1",
+            "/sys/class/hidraw/hidraw2",
+        ]
+        mock_exists.return_value = True
+
+        # Interface 1: 20 bytes with Usage 0x01 (media controls)
+        iface1_desc = bytes([0x06, 0xFF, 0xFF, 0x09, 0x01] + [0x00] * 15)
+        # Interface 2: 20 bytes with Usage 0x02 (vendor config)
+        iface2_desc = bytes([0x06, 0xFF, 0xFF, 0x09, 0x02] + [0x00] * 15)
+        uevent_content = "PRODUCT=3151/4011/1\nHID_ID=0003:00003151:00004011\n"
+
+        def fake_open(path, mode="r", *args, **kwargs):
+            m = MagicMock()
+            if "report_descriptor" in str(path):
+                if "hidraw1" in str(path):
+                    m.read.return_value = iface1_desc
+                elif "hidraw2" in str(path):
+                    m.read.return_value = iface2_desc
+                else:
+                    m.read.return_value = b""
+            elif "uevent" in str(path):
+                m.read.return_value = uevent_content
+            else:
+                m.read.return_value = ""
+            m.__enter__.return_value = m
+            m.__exit__.return_value = None
+            return m
+
+        mock_open_file.side_effect = fake_open
+
+        dev = SkillkorpK20Driver.find_device()
+        self.assertEqual(dev, "/dev/hidraw2")
+
+
 
 class TestProfileManager(unittest.TestCase):
     """Tests du gestionnaire multi-profils."""
