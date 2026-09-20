@@ -56,6 +56,7 @@ class SkillkorpK20Window(Adw.ApplicationWindow):
         self.driver = SkillkorpK20Driver()
         self.pm = ProfileManager()
         self._updating_ui = False
+        self.profile_rows: List[Adw.ActionRow] = []
 
         # Custom styling
         css_provider = Gtk.CssProvider()
@@ -484,6 +485,11 @@ class SkillkorpK20Window(Adw.ApplicationWindow):
         btn_import_prof = Gtk.Button(label="Importer", icon_name="document-open-symbolic")
         btn_import_prof.connect("clicked", self._on_import_profile_clicked)
         header_btn_box.append(btn_import_prof)
+
+        btn_export_prof = Gtk.Button(label="Exporter", icon_name="document-save-symbolic")
+        btn_export_prof.set_tooltip_text("Exporter le profil actif en fichier JSON")
+        btn_export_prof.connect("clicked", lambda b: self._on_export_profile_clicked())
+        header_btn_box.append(btn_export_prof)
         self.profiles_group.set_header_suffix(header_btn_box)
 
         self.profile_combo = Adw.ComboRow(title="Profil en cours d'utilisation")
@@ -754,22 +760,85 @@ class SkillkorpK20Window(Adw.ApplicationWindow):
             cur_id = self.pm.get_active_profile_id()
             if cur_id in self.profile_ids:
                 self.profile_combo.set_selected(self.profile_ids.index(cur_id))
+
+            # Repopulate profiles_list_group with detailed action rows
+            if hasattr(self, "profiles_list_group") and self.profiles_list_group is not None:
+                if hasattr(self, "profile_rows"):
+                    for r in self.profile_rows:
+                        self.profiles_list_group.remove(r)
+                self.profile_rows = []
+
+                for p in profiles:
+                    pid = p["id"]
+                    name = p.get("name", pid)
+                    desc = p.get("description", "")
+                    is_active = (pid == cur_id)
+
+                    row = Adw.ActionRow()
+                    row.set_use_markup(False)
+                    row.set_title(name)
+                    row.set_subtitle(desc if desc else f"Identifiant : {pid}")
+                    row.set_activatable(True)
+                    if is_active:
+                        row.set_tooltip_text(f"Profil '{name}' (actuellement actif)")
+                    else:
+                        row.set_tooltip_text(f"Cliquer pour activer le profil '{name}'")
+
+                    # Status icon prefix
+                    prefix_icon = Gtk.Image.new_from_icon_name("emblem-ok-symbolic" if is_active else "folder-symbolic")
+                    row.add_prefix(prefix_icon)
+
+                    # Row activation switches active profile
+                    def _make_activate_cb(target_id, target_name):
+                        return lambda r: self._switch_to_profile(target_id, target_name)
+                    row.connect("activated", _make_activate_cb(pid, name))
+
+                    # Badge "Actif"
+                    if is_active:
+                        badge = Gtk.Label(label="Actif")
+                        badge.add_css_class("status-pill-connected")
+                        badge.set_valign(Gtk.Align.CENTER)
+                        row.add_suffix(badge)
+
+                    # Button: Exporter
+                    btn_export = Gtk.Button(icon_name="document-save-symbolic")
+                    btn_export.set_tooltip_text(f"Exporter le profil '{name}' en JSON")
+                    btn_export.set_valign(Gtk.Align.CENTER)
+                    btn_export.connect("clicked", lambda b, target_id=pid: self._on_export_profile_clicked(target_id))
+                    row.add_suffix(btn_export)
+
+                    # Button: Supprimer (not allowed on 'default')
+                    if pid != "default":
+                        btn_del = Gtk.Button(icon_name="user-trash-symbolic")
+                        btn_del.set_tooltip_text(f"Supprimer le profil '{name}'")
+                        btn_del.add_css_class("destructive-action")
+                        btn_del.set_valign(Gtk.Align.CENTER)
+                        btn_del.connect("clicked", lambda b, target_id=pid, target_name=name: self._on_delete_profile_clicked(target_id, target_name))
+                        row.add_suffix(btn_del)
+
+                    self.profiles_list_group.add(row)
+                    self.profile_rows.append(row)
         finally:
             self._updating_ui = old_updating
+
+    def _switch_to_profile(self, target_id: str, target_name: Optional[str] = None):
+        cur_id = self.pm.get_active_profile_id()
+        if target_id != cur_id:
+            try:
+                prof = self.pm.switch_profile(target_id, driver=self.driver)
+                self._sync_ui_from_driver()
+                self._refresh_profiles_list()
+                p_name = target_name or prof.get("name", target_id)
+                self._show_toast(f"Profil '{p_name}' activé")
+            except Exception as e:
+                self._show_toast(f"Erreur : {e}")
 
     def _on_profile_combo_changed(self, row, param):
         if self._updating_ui: return
         idx = row.get_selected()
         if hasattr(self, "profile_ids") and 0 <= idx < len(self.profile_ids):
             target_id = self.profile_ids[idx]
-            cur_id = self.pm.get_active_profile_id()
-            if target_id != cur_id:
-                try:
-                    prof = self.pm.switch_profile(target_id, driver=self.driver)
-                    self._sync_ui_from_driver()
-                    self._show_toast(f"Profil '{prof.get('name', target_id)}' activé")
-                except Exception as e:
-                    self._show_toast(f"Erreur : {e}")
+            self._switch_to_profile(target_id)
 
     def _on_new_profile_clicked(self, btn):
         dialog = Adw.MessageDialog(
@@ -789,10 +858,14 @@ class SkillkorpK20Window(Adw.ApplicationWindow):
                 name = entry.get_text().strip()
                 if name:
                     prof_id = name.lower().replace(" ", "_")
-                    self.pm.create_profile(prof_id, name)
-                    self.pm.switch_profile(prof_id, driver=self.driver)
-                    self._sync_ui_from_driver()
-                    self._show_toast(f"Profil '{name}' créé et activé")
+                    try:
+                        self.pm.create_profile(prof_id, name)
+                        self.pm.switch_profile(prof_id, driver=self.driver)
+                        self._sync_ui_from_driver()
+                        self._refresh_profiles_list()
+                        self._show_toast(f"Profil '{name}' créé et activé")
+                    except Exception as e:
+                        self._show_toast(f"Erreur création profil : {e}")
 
         dialog.connect("response", on_response)
         dialog.present()
@@ -815,11 +888,78 @@ class SkillkorpK20Window(Adw.ApplicationWindow):
                     prof_id = self.pm.import_profile(path)
                     self.pm.switch_profile(prof_id, driver=self.driver)
                     self._sync_ui_from_driver()
+                    self._refresh_profiles_list()
                     self._show_toast(f"Profil importé : {prof_id}")
             except Exception as e:
-                self._show_toast(f"Erreur d'import : {e}")
+                if "dismissed" not in str(e).lower():
+                    self._show_toast(f"Erreur d'import : {e}")
 
         dialog.open(self, None, on_open_finish)
+
+    def _on_export_profile_clicked(self, prof_id: Optional[str] = None):
+        if not prof_id:
+            prof_id = self.pm.get_active_profile_id()
+
+        prof = self.pm.get_profile(prof_id)
+        prof_name = prof.get("name", prof_id) if prof else prof_id
+
+        dialog = Gtk.FileDialog()
+        dialog.set_title(f"Exporter le profil '{prof_name}'")
+        dialog.set_initial_name(f"{prof_id}.json")
+        filter_json = Gtk.FileFilter()
+        filter_json.set_name("Fichiers JSON de profil (*.json)")
+        filter_json.add_pattern("*.json")
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        filters.append(filter_json)
+        dialog.set_filters(filters)
+
+        def on_save_finish(d, result):
+            try:
+                gfile = d.save_finish(result)
+                if gfile:
+                    path = gfile.get_path()
+                    self.pm.export_profile(prof_id, path)
+                    self._refresh_profiles_list()
+                    self._show_toast(f"Profil '{prof_name}' exporté : {path}")
+            except Exception as e:
+                if "dismissed" not in str(e).lower():
+                    self._show_toast(f"Erreur d'export : {e}")
+
+        dialog.save(self, None, on_save_finish)
+
+    def _on_delete_profile_clicked(self, prof_id: str, prof_name: Optional[str] = None):
+        if prof_id == "default":
+            self._show_toast("Le profil par défaut ne peut pas être supprimé.")
+            return
+
+        if not prof_name:
+            prof = self.pm.get_profile(prof_id)
+            prof_name = prof.get("name", prof_id) if prof else prof_id
+
+        dialog = Adw.MessageDialog(
+            transient_for=self,
+            heading="Supprimer le profil",
+            body=f"Voulez-vous vraiment supprimer définitivement le profil '{prof_name}' ({prof_id}) ?",
+        )
+        dialog.add_response("cancel", "Annuler")
+        dialog.add_response("delete", "Supprimer")
+        dialog.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+
+        def on_response(d, resp):
+            if resp == "delete":
+                try:
+                    was_active = (self.pm.get_active_profile_id() == prof_id)
+                    self.pm.delete_profile(prof_id)
+                    if was_active:
+                        self.pm.switch_profile("default", driver=self.driver)
+                        self._sync_ui_from_driver()
+                    self._refresh_profiles_list()
+                    self._show_toast(f"Profil '{prof_name}' supprimé.")
+                except Exception as e:
+                    self._show_toast(f"Erreur : {e}")
+
+        dialog.connect("response", on_response)
+        dialog.present()
 
     def _on_auto_switch_toggled(self, row, param):
         self.pm.set_auto_switch_enabled(row.get_active())
