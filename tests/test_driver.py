@@ -33,7 +33,6 @@ from k20_driver import (
     CMD_SET_KEYMATRIX_SIMPLE,
     CMD_SET_FN_SIMPLE,
     CMD_GET_BATTERY,
-    CMD_SET_SLEEPTIME,
 )
 from profile_manager import ProfileManager, DEFAULT_PROFILES
 
