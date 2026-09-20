@@ -13,4 +13,3 @@ dist/
 build_rpm/
 build_deb/
 .pytest_cache/
-.github/
